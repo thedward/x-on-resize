@@ -172,8 +172,8 @@ main (int argc, char **argv)
 	if (start) {
 		if (config)
 			system(config);
-		else
-			printf("config\n");
+		if (resize)
+			system(resize);
 	}
 	for (;;) {
 		int	configed = 0;

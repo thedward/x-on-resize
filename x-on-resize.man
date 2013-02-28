@@ -1,0 +1,59 @@
+.\"
+.\" Copyright 2013 Keith Packard
+.\"
+.\" Permission to use, copy, modify, distribute, and sell this software and its
+.\" documentation for any purpose is hereby granted without fee, provided that
+.\" the above copyright notice appear in all copies and that both that
+.\" copyright notice and this permission notice appear in supporting
+.\" documentation, and that the name of Keith Packard not be used in
+.\" advertising or publicity pertaining to distribution of the software without
+.\" specific, written prior permission.  Keith Packard makes no
+.\" representations about the suitability of this software for any purpose.  It
+.\" is provided "as is" without express or implied warranty.
+.\"
+.\" KEITH PACKARD DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+.\" INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO
+.\" EVENT SHALL KEITH PACKARD BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+.\" CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+.\" DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+.\" TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+.\" PERFORMANCE OF THIS SOFTWARE.
+.\"
+.TH X-ON-RESIZE __appmansuffix__ __vendorversion__
+.SH NAME
+x-on-resize \- monitor for hotplug or screen reconfigure events
+.SH SYNOPSIS
+.B "x-on-resize"
+[\-\-help]
+[\-\-display \fIdisplay\fP]
+[\-\-config \fIconfig-script\fP]
+[\-\-resize \fIresize-script\fP]
+[\-\-start]
+.SH DESCRIPTION
+.I X-on-resize
+is used to monitor the X display for output configuration changes
+and/or screen resize events. When these occur, it can call external
+programs to respond to the new display environment.
+
+.SH OPTIONS
+.IP "\-h, \-\-help"
+Print out a summary of the usage and exit.
+.IP "\-d, \-\-display \fIname\fP"
+This option selects the X display to use. Note this refers to the X
+screen abstraction, not the monitor (or output).
+.IP "\-c, \-\-config \fIconfig-script\fP"
+This option selects the external script to run when the set of
+available outputs has changed. If not provided, x-on-resize prints
+"config" on stdout.
+.IP "\-r, \-\-resize \fIresize-script\fP"
+This option selects the external script to run when the size
+of the root window has changed. If not provided, x-on-resize prints
+"resize" on stdout.
+.IP "\-s, \-\-start"
+This directs x-on-resize to run any defined scripts at startup time in
+addition to when the specified conditions occur.
+.SH "SEE ALSO"
+Xrandr(__libmansuffix__), xrandr(__appmansuffix__)
+.SH AUTHORS
+Keith Packard,
+Open Source Technology Center, Intel Corporation.
