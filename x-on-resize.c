@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/Xrandr.h>
+#include "config.h"
 
 struct output_info {
 	struct output_info	*next;
@@ -125,10 +126,11 @@ main (int argc, char **argv)
 		{ "auto", 0, NULL, 'a' },
 		{ "display", 1, NULL, 'd' },
 		{ "help", 0, NULL, 'h' },
+		{ "version", 0, NULL, 'v' },
 		{ 0, 0, NULL, 0 }
 	};
 
-	while ((c = getopt_long(argc, argv, "c:r:d:hs", opts, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "c:r:d:hsav", opts, NULL)) != -1) {
 		switch (c) {
 		case 'c':
 			config = optarg;
@@ -145,9 +147,12 @@ main (int argc, char **argv)
 		case 's':
 			start = 1;
 			break;
+		case 'v':
+			printf("%s\n", PACKAGE_STRING);
+			exit(0);
 		case 'h':
 		default:
-			fprintf(stderr, "Usage: %s --display <display> --config <config> --resize <resize> --start\n", argv[0]);
+			fprintf(stderr, "Usage: %s --display <display> --config <config> --resize <resize> --auto --start --version\n", argv[0]);
 			exit(1);
 			break;
 		}

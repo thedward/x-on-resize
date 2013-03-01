@@ -1,5 +1,5 @@
 AC_PREREQ([2.60])
-AC_INIT([x-on-resize], [0.1],
+AC_INIT([x-on-resize], [0.2],
         [https://bugs.freedesktop.org/enter_bug.cgi?product=xorg], [x-on-resize])
 AC_CONFIG_SRCDIR([Makefile.am])
 AC_CONFIG_HEADERS([config.h])
