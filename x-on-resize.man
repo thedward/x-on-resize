@@ -49,6 +49,10 @@ available outputs has changed. If not provided, x-on-resize prints
 This option selects the external script to run when the size
 of the root window has changed. If not provided, x-on-resize prints
 "resize" on stdout.
+.IP "\-a, \-\-auto"
+This is the same as \-\-config "xrandr --auto", which sets
+the system to a reasonable configuration each time the connected set
+of outputs changes.
 .IP "\-s, \-\-start"
 This directs x-on-resize to run any defined scripts at startup time in
 addition to when the specified conditions occur.

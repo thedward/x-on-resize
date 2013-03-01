@@ -111,9 +111,9 @@ main (int argc, char **argv)
 	int		major, minor;
 	XEvent		ev;
 	XRRNotifyEvent	*nev;
-	char		*config = NULL;
-	char		*resize = NULL;
-	char		*display = NULL;
+	const char	*config = NULL;
+	const char	*resize = NULL;
+	const char	*display = NULL;
 	int		c, o;
 	int		start = 0;
 	XRRScreenResources	*resources;
@@ -122,6 +122,7 @@ main (int argc, char **argv)
 		{ "config", 1, NULL, 'c' },
 		{ "resize", 1, NULL, 'r' },
 		{ "start", 0, NULL, 's' },
+		{ "auto", 0, NULL, 'a' },
 		{ "display", 1, NULL, 'd' },
 		{ "help", 0, NULL, 'h' },
 		{ 0, 0, NULL, 0 }
@@ -137,6 +138,9 @@ main (int argc, char **argv)
 			break;
 		case 'd':
 			display = optarg;
+			break;
+		case 'a':
+			config = "xrandr --auto";
 			break;
 		case 's':
 			start = 1;
