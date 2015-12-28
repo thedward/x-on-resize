@@ -17,6 +17,7 @@ typedef struct {
 typedef struct {
 	string name;
 	string mode;
+	int mode_id;
 	bool connected;
 	bool primary;
 	int width, height;
@@ -72,9 +73,11 @@ const int priority_any = 0;
 const int priority_preferred = 1;
 const int priority_current = 2;
 
-typedef enum { start, start_output, output, skip_output, mode_get, mode_skip, done } state_t;
+typedef enum { start, start_output, output, skip_output,
+	       mode_get, mode_skip, done } state_t;
 
-/* Parse xrandr results to compute the set of available monitors
+/* Parse xrandr results to compute the set of available monitors and
+ * current screen size
  */
 output_t[]
 get_outputs(*screen_t screen) {
@@ -193,7 +196,7 @@ get_outputs(*screen_t screen) {
 				}
 				if (this_priority > mode_priority) {
 					output.mode = words[0];
-					string[] geom = String::wordsplit(words[0], "xi");
+					File::sscanf(words[1], "(0x%x)", &output.mode_id);
 					state = state_t.mode_get;
 					mode_priority = this_priority;
 				} else {
@@ -216,11 +219,23 @@ get_outputs(*screen_t screen) {
 		case state_t.mode_get:
 		case state_t.mode_skip:
 			if (words[0] == "h:") {
-				if (state == state_t.mode_get)
-					output.width = string_to_integer(words[2]);
+				if (state == state_t.mode_get) {
+					for (int h = 0; h < dim(words) - 1; h++) {
+						if (words[h] == "width") {
+							output.width = string_to_integer(words[h+1]);
+							break;
+						}
+					}
+				}
 			} else if (words[0] == "v:") {
-				if (state == state_t.mode_get)
-					output.height = string_to_integer(words[2]);
+				if (state == state_t.mode_get) {
+					for (int v = 0; v < dim(words) - 1; v++) {
+						if (words[v] == "height") {
+							output.height = string_to_integer(words[v+1]);
+							break;
+						}
+					}
+				}
 			} else {
 				state = state_t.output;
 				break;
@@ -259,6 +274,7 @@ monitor_t[] get_monitors(&output_t[] outputs) {
 					.name = sprintf("DP-GROUP-%d", output->tile.group_id),
 					.group_id = output->tile.group_id,
 					.outputs = outputs,
+					.primary = false,
 					.leader = 0,
 					.width = output->tile.number_h * output->width,
 					.height = output->tile.number_v * output->height,
@@ -282,6 +298,7 @@ monitor_t[] get_monitors(&output_t[] outputs) {
 				.group_id = -1,
 				.outputs = ((*output_t)[1]) { output },
 				.leader = 0,
+				.primary = false,
 				.width = output->width,
 				.height = output->height,
 				.x = -1,
@@ -302,19 +319,6 @@ is_internal_output(&output_t output) {
 	return false;
 }
 
-int
-connector_priority(&output_t output) {
-	if (String::index(output.name, "DP") >= 0)
-		return 4;
-	if (String::index(output.name, "DVI") >= 0)
-		return 3;
-	if (String::index(output.name, "HDMI") >= 0)
-		return 2;
-	if (String::index(output.name, "LVDS") >= 0)
-		return 1;
-	return 0;
-}
-
 bool
 is_internal_monitor(&monitor_t monitor) {
 	for (int o = 0; o < dim(monitor.outputs); o++)
@@ -323,11 +327,86 @@ is_internal_monitor(&monitor_t monitor) {
 	return false;
 }
 
-int
-area(&monitor_t monitor) {
-	return monitor.width * monitor.height;
+/* Return the current primary monitor */
+*monitor_t
+get_primary(&monitor_t[] monitors)
+{
+	for (int m = 0; m < dim(monitors); m++) {
+		&monitor_t	monitor = &monitors[m];
+		if (monitor.primary)
+			return &monitor;
+	}
+
+	monitors[0].primary = true;
+	return &monitors[0];
 }
 
+/* Return the first internal monitor (LVDS or eDP) */
+*monitor_t
+get_internal(&monitor_t[] monitors)
+{
+	for (int m = 0; m < dim(monitors); m++) {
+		&monitor_t	monitor = &monitors[m];
+		if (is_internal_monitor(&monitor))
+			return &monitor;
+	}
+	return &monitors[0];
+}
+
+/* Set output positions and primary status */
+void
+set_output(&monitor_t[] monitors)
+{
+	/* Set output positions and primary value */
+	for (int m = 0; m < dim(monitors); m++) {
+		*monitor_t	monitor = &monitors[m];
+
+		if (monitor->primary)
+			monitor->outputs[monitor->leader]->primary = true;
+
+		if (monitor->group_id >= 0) {
+			int	tile_width = monitor->outputs[0]->width;
+			int	tile_height = monitor->outputs[0]->height;
+
+			for (int o = 0; o < dim(monitor->outputs); o++) {
+				monitor->outputs[o]->x = monitor->x + monitor->outputs[o]->tile.hpos * tile_width;
+				monitor->outputs[o]->y = monitor->y + monitor->outputs[o]->tile.vpos * tile_height;
+			}
+		} else {
+			monitor->outputs[0]->x = monitor->x;
+			monitor->outputs[0]->y = monitor->y;
+		}
+	}
+}
+
+/* Set overall screen size */
+void
+set_screen(&output_t[] outputs, *screen_t screen)
+{
+	int	width = 0;
+	int	height = 0;
+
+	for (int o = 0; o < dim(outputs); o++) {
+		if (outputs[o].connected) {
+			int	w = outputs[o].x + outputs[o].width;
+			int	h = outputs[o].y + outputs[o].height;
+
+			if (w > width)
+				width = w;
+			if (h > height)
+				height = h;
+		}
+	}
+	screen->width = width;
+	screen->height = height;
+}
+
+/*
+ * Policy -- select the primary monitor
+ *
+ * Pick the largest external monitor if it's bigger than 1080p,
+ * otherwise pick the internal monitor
+ */
 void
 set_primary(&monitor_t[] monitors)
 {
@@ -351,40 +430,23 @@ set_primary(&monitor_t[] monitors)
 			}
 		}
 	}
-	for (int m = 0; m < dim(monitors); m++) {
-		*monitor_t	monitor = &monitors[m];
-		monitor->primary = monitor == primary;
-		if (monitor->primary)
-			monitor->outputs[monitor->leader]->primary = true;
-	}
+	primary->primary = true;
 }
 
-*monitor_t
-get_primary(&monitor_t[] monitors)
-{
-	for (int m = 0; m < dim(monitors); m++) {
-		&monitor_t	monitor = &monitors[m];
-		if (monitor.primary)
-			return &monitor;
-	}
-
-	monitors[0].primary = true;
-	return &monitors[0];
-}
-
-*monitor_t
-get_internal(&monitor_t[] monitors)
-{
-	for (int m = 0; m < dim(monitors); m++) {
-		&monitor_t	monitor = &monitors[m];
-		if (is_internal_monitor(&monitor))
-			return &monitor;
-	}
-	return &monitors[0];
-}
+/*
+ * Policy -- position the monitors
+ *
+ * Place the primary monitor at the upper left corner of the
+ * screen.
+ *
+ * If the internal monitor is not primary, place it just below the
+ * primary monitor.
+ *
+ * Place all other monitors to the right of the primary monitor
+ */
 
 void
-set_pos(&monitor_t[] monitors)
+set_monitor_pos(&monitor_t[] monitors)
 {
 	int	nset = 0;
 
@@ -414,44 +476,6 @@ set_pos(&monitor_t[] monitors)
 		}
 	}
 
-	/* Set output positions */
-	for (int m = 0; m < dim(monitors); m++) {
-		*monitor_t	monitor = &monitors[m];
-
-		if (monitor->group_id >= 0) {
-			int	tile_width = monitor->outputs[0]->width;
-			int	tile_height = monitor->outputs[0]->height;
-
-			for (int o = 0; o < dim(monitor->outputs); o++) {
-				monitor->outputs[o]->x = monitor->x + monitor->outputs[o]->tile.hpos * tile_width;
-				monitor->outputs[o]->y = monitor->y + monitor->outputs[o]->tile.vpos * tile_height;
-			}
-		} else {
-			monitor->outputs[0]->x = monitor->x;
-			monitor->outputs[0]->y = monitor->y;
-		}
-	}
-}
-
-void
-set_screen(&output_t[] outputs, *screen_t screen)
-{
-	int	width = 0;
-	int	height = 0;
-
-	for (int o = 0; o < dim(outputs); o++) {
-		if (outputs[o].connected) {
-			int	w = outputs[o].x + outputs[o].width;
-			int	h = outputs[o].y + outputs[o].height;
-
-			if (w > width)
-				width = w;
-			if (h > height)
-				height = h;
-		}
-	}
-	screen->width = width;
-	screen->height = height;
 }
 
 string
@@ -466,7 +490,7 @@ print_output(*output_t output, int tab) {
 	printf ("%soutput %s\n", tabs(tab), output->name);
 	printf ("%sconnected %v\n", tabs(tab+1), output->connected);
 	if (output->connected) {
-		printf ("%smode %s\n", tabs(tab+1), output->mode);
+		printf ("%smode %s (0x%x)\n", tabs(tab+1), output->mode, output->mode_id);
 		printf ("%sprimary %v\n", tabs(tab+1), output->primary);
 		printf ("%swidth, height %d,%d\n", tabs(tab+1), output->width, output->height);
 		printf ("%sx, y %d, %d\n", tabs(tab+1), output->x, output->y);
@@ -504,7 +528,7 @@ output_config(*output_t output) {
 			"--output",
 			output->name,
 			"--mode",
-			output->mode,
+			sprintf ("0x%x", output->mode_id),
 			"--pos",
 			sprintf("%dx%d", output->x, output->y)
 		};
@@ -590,10 +614,14 @@ xrandr_auto()
 	screen_t screen;
 	screen_t temp_screen;
 
+	/* Implement our policy */
 	set_primary(&monitors);
+	set_monitor_pos(&monitors);
 
-	set_pos(&monitors);
-
+	/* Using the specific configuration, place outputs
+	 * and set the overall screen size
+	 */
+	set_output(&monitors);
 	set_screen(&outputs, &screen);
 
 	temp_screen.width = max(orig_screen.width, screen.width);
@@ -628,11 +656,12 @@ xrandr_auto()
 
 	string[] xrandr_args = cat_args(args);
 
-	if (dry_run) {
+	if (dry_run || verbose) {
 		for (int a = 0; a < dim(xrandr_args); a++)
 			printf("%s ", xrandr_args[a]);
 		printf ("\n");
-	} else {
+	}
+	if (!dry_run) {
 		system("xrandr", xrandr_args ...);
 	}
 }
