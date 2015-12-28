@@ -1,0 +1,623 @@
+#!/usr/bin/env nickle
+
+autoimport Process;
+autoload ParseArgs;
+
+/* Parsed TILE property contents */
+typedef struct {
+	int	group_id;
+	int	flags;
+	int 	number_h;
+	int	number_v;
+	int	hpos;
+	int	vpos;
+} tile_t;
+
+/* Configuration for one output */
+typedef struct {
+	string name;
+	string mode;
+	bool connected;
+	bool primary;
+	int width, height;
+	int x, y;
+	bool is_tile;
+	tile_t tile;
+} output_t;
+
+/* Configuration for one monitor (collection of outputs) */
+typedef struct {
+	string		name;
+	int		group_id;
+	bool		primary;
+	int		leader;
+	int		width;
+	int		height;
+	int		x;
+	int		y;
+	(*output_t)[...]	outputs;
+} monitor_t;
+
+/* Overall screen configuration */
+typedef struct {
+	int		width;
+	int		height;
+} screen_t;
+
+/* List the existing manually configured monitors
+ */
+string[]
+get_existing_monitors() {
+	file	input = popen(popen_direction.read, false,
+			      "xrandr", "xrandr", "--listmonitors");
+	string[...] names = {};
+	while (!File::end(input)) {
+		string		line = File::fgets(input);
+		string[]	words = String::wordsplit(line, " \t");
+
+		if (words[0] != "Monitors:" && dim(words) >= 2) {
+			string	name = words[1];
+
+			if (name[0] != '+') {
+				if (name[0] == '*')
+					name = String::substr(name, 1, String::length(name) - 1);
+				names[dim(names)] = name;
+			}
+		}
+	}
+	return names;
+}
+
+const int priority_any = 0;
+const int priority_preferred = 1;
+const int priority_current = 2;
+
+typedef enum { start, output, skip_output, mode_get, mode_skip, done } state_t;
+
+/* Parse xrandr results to compute the set of available monitors
+ */
+output_t[]
+get_outputs() {
+	file	input = popen(popen_direction.read, false,
+			      "xrandr", "xrandr", "--verbose", "--prop");
+	output_t[...] outputs = {};
+	output_t output;
+	int mode_priority;
+	state_t state = state_t.start;
+	string line;
+	string[] words;
+
+	void add_output() {
+		switch (state) {
+		case state_t.skip_output:
+		case state_t.output:
+		case state_t.mode_skip:
+		case state_t.mode_get:
+#			printf ("add output %s\n", output.name);
+			outputs[dim(outputs)] = output;
+		}
+	}
+
+	void getline() {
+		if (File::end(input))
+			line = "DONE";
+		else
+			line = File::fgets(input);
+
+		words = String::wordsplit(line, " \t");
+	}
+
+	bool check_output() {
+		if (dim(words) >= 2) {
+			switch (words[1]) {
+			case "connected":
+			case "disconnected":
+				add_output();
+				state = state_t.start;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	getline();
+
+	while (state != state_t.done) {
+#		printf("\tstate %v words: %v\n", state, words);
+		if (words[0] == "DONE") {
+			add_output();
+			state = state_t.done;
+			continue;
+		}
+		switch (state) {
+		case state_t.start:
+			/* Look for an output */
+			if (dim(words) >= 2) {
+				switch (words[1]) {
+				case "connected":
+					bool primary = false;
+					if (dim(words) >= 3 && words[2] == "primary")
+						primary = true;
+					output = (output_t) {
+						.name = words[0],
+						.mode = "",
+						.connected = true,
+						.primary = primary,
+						.width = 0,
+						.height = 0,
+						.is_tile = false,
+					};
+					state = state_t.output;
+					mode_priority = -1;
+					break;
+				case "disconnected":
+					output = (output_t) {
+						.name = words[0],
+						.mode = "",
+						.connected = false,
+						.primary = false,
+						.width = 0,
+						.height = 0,
+						.is_tile = false,
+					};
+					state = state_t.skip_output;
+					break;
+				}
+			}
+			getline();
+			break;
+		case state_t.skip_output:
+			if (check_output())
+				break;
+			getline();
+			break;
+		case state_t.output:
+			if (check_output())
+				break;
+
+			/* Look for a mode */
+			if (String::index(line, "MHz") >= 0) {
+				int this_priority = priority_any;
+				if (String::index(line, "current") >= 0) {
+					this_priority = priority_current;
+				} else if (String::index(line, "preferred") >= 0) {
+					this_priority = priority_preferred;
+				}
+				if (this_priority > mode_priority) {
+					output.mode = words[0];
+					string[] geom = String::wordsplit(words[0], "xi");
+					state = state_t.mode_get;
+					mode_priority = this_priority;
+				} else {
+					state = state_t.mode_skip;
+				}
+			} else if (words[0] == "TILE:" && dim(words) >= 7) {
+				int[6] vals = { [i] = string_to_integer(words[i+1]) };
+				output.is_tile = true;
+				output.tile = (tile_t) {
+					.group_id = vals[0],
+					.flags = vals[1],
+					.number_h = vals[2],
+					.number_v = vals[3],
+					.hpos = vals[4],
+					.vpos = vals[5],
+				};
+			}
+			getline();
+			break;
+		case state_t.mode_get:
+		case state_t.mode_skip:
+			if (words[0] == "h:") {
+				if (state == state_t.mode_get)
+					output.width = string_to_integer(words[2]);
+			} else if (words[0] == "v:") {
+				if (state == state_t.mode_get)
+					output.height = string_to_integer(words[2]);
+			} else {
+				state = state_t.output;
+				break;
+			}
+			getline();
+			break;
+		}
+	}
+	return outputs;
+}
+
+/*
+ * Construct the set of monitors from the output information, building
+ * composite monitors from outputs with the TILE property
+ */
+monitor_t[] get_monitors(&output_t[] outputs) {
+	monitor_t[...]	monitors = {};
+
+	for (int i = 0; i < dim(outputs); i++) {
+		*output_t	output = &outputs[i];
+
+		if (!output->connected)
+			continue;
+
+		if (output->is_tile) {
+			int	m;
+
+			for (m = 0; m < dim(monitors); m++) {
+				if (monitors[m].group_id == output->tile.group_id)
+					break;
+			}
+			if (m == dim(monitors)) {
+				(*output_t)[...] outputs;
+				outputs[0] = output;
+				monitors[m] = (monitor_t) {
+					.name = sprintf("DP-GROUP-%d", output->tile.group_id),
+					.group_id = output->tile.group_id,
+					.outputs = outputs,
+					.leader = 0,
+					.width = output->tile.number_h * output->width,
+					.height = output->tile.number_v * output->height,
+					.x = -1,
+					.y = -1,
+				};
+			} else {
+				&output_t	leader = monitors[m].outputs[monitors[m].leader];
+
+				if (output->tile.vpos < leader.tile.vpos ||
+				    output->tile.vpos == leader.tile.vpos &&
+				    output->tile.hpos < leader.tile.hpos)
+
+					monitors[m].leader = dim(monitors[m].outputs);
+
+				monitors[m].outputs[dim(monitors[m].outputs)] = output;
+			}
+		} else {
+			monitors[dim(monitors)] = (monitor_t) {
+				.name = output->name,
+				.group_id = -1,
+				.outputs = ((*output_t)[1]) { output },
+				.leader = 0,
+				.width = output->width,
+				.height = output->height,
+				.x = -1,
+				.y = -1,
+			};
+		}
+	}
+
+	return monitors;
+}
+
+bool
+is_internal_output(&output_t output) {
+	if (String::index(output.name, "eDP") >= 0)
+		return true;
+	if (String::index(output.name, "LVDS") >= 0)
+		return true;
+	return false;
+}
+
+int
+connector_priority(&output_t output) {
+	if (String::index(output.name, "DP") >= 0)
+		return 4;
+	if (String::index(output.name, "DVI") >= 0)
+		return 3;
+	if (String::index(output.name, "HDMI") >= 0)
+		return 2;
+	if (String::index(output.name, "LVDS") >= 0)
+		return 1;
+	return 0;
+}
+
+bool
+is_internal_monitor(&monitor_t monitor) {
+	for (int o = 0; o < dim(monitor.outputs); o++)
+		if (is_internal_output(monitor.outputs[o]))
+			return true;
+	return false;
+}
+
+int
+area(&monitor_t monitor) {
+	return monitor.width * monitor.height;
+}
+
+void
+set_primary(&monitor_t[] monitors)
+{
+	*monitor_t	primary = &monitors[0];
+
+	for (int m = 1; m < dim(monitors); m++) {
+		*monitor_t	monitor = &monitors[m];
+
+		if (is_internal_monitor(primary)) {
+			if (!is_internal_monitor(monitor)) {
+				if (monitor->height > 1080)
+					primary = monitor;
+			}
+		} else {
+			if (is_internal_monitor(monitor)) {
+				if (primary->height <= 1080)
+					primary = monitor;
+			} else {
+				if (monitor->height > primary->height)
+					primary = monitor;
+			}
+		}
+	}
+	for (int m = 0; m < dim(monitors); m++) {
+		*monitor_t	monitor = &monitors[m];
+		monitor->primary = monitor == primary;
+		if (monitor->primary)
+			monitor->outputs[monitor->leader]->primary = true;
+	}
+}
+
+*monitor_t
+get_primary(&monitor_t[] monitors)
+{
+	for (int m = 0; m < dim(monitors); m++) {
+		&monitor_t	monitor = &monitors[m];
+		if (monitor.primary)
+			return &monitor;
+	}
+
+	monitors[0].primary = true;
+	return &monitors[0];
+}
+
+*monitor_t
+get_internal(&monitor_t[] monitors)
+{
+	for (int m = 0; m < dim(monitors); m++) {
+		&monitor_t	monitor = &monitors[m];
+		if (is_internal_monitor(&monitor))
+			return &monitor;
+	}
+	return &monitors[0];
+}
+
+void
+set_pos(&monitor_t[] monitors)
+{
+	int	nset = 0;
+
+	/* Primary monitor goes upper left */
+	*monitor_t	primary = get_primary(&monitors);
+
+	primary->x = 0;
+	primary->y = 0;
+
+	/* Set panel position, if not primary */
+	*monitor_t	internal = get_internal(&monitors);
+	if (is_internal_monitor(internal) && !internal->primary) {
+		internal->x = 0;
+		internal->y = primary->height;
+	}
+
+	int	x = primary->width;
+
+	/* Set remaining positions, right of primary */
+	for (int m = 0; m < dim(monitors); m++) {
+		*monitor_t	monitor = &monitors[m];
+
+		if (monitor->x < 0) {
+			monitor->x = x;
+			monitor->y = 0;
+			x += monitor->width;
+		}
+	}
+
+	/* Set output positions */
+	for (int m = 0; m < dim(monitors); m++) {
+		*monitor_t	monitor = &monitors[m];
+
+		if (monitor->group_id >= 0) {
+			int	tile_width = monitor->outputs[0]->width;
+			int	tile_height = monitor->outputs[0]->height;
+
+			for (int o = 0; o < dim(monitor->outputs); o++) {
+				monitor->outputs[o]->x = monitor->x + monitor->outputs[o]->tile.hpos * tile_width;
+				monitor->outputs[o]->y = monitor->y + monitor->outputs[o]->tile.vpos * tile_height;
+			}
+		} else {
+			monitor->outputs[0]->x = monitor->x;
+			monitor->outputs[0]->y = monitor->y;
+		}
+	}
+}
+
+void
+set_screen(&output_t[] outputs, *screen_t screen)
+{
+	int	width = 0;
+	int	height = 0;
+
+	for (int o = 0; o < dim(outputs); o++) {
+		if (outputs[o].connected) {
+			int	w = outputs[o].x + outputs[o].width;
+			int	h = outputs[o].y + outputs[o].height;
+
+			if (w > width)
+				width = w;
+			if (h > height)
+				height = h;
+		}
+	}
+	screen->width = width;
+	screen->height = height;
+}
+
+string
+tabs(int tab) {
+	static string[]	t = { "", "\t", "\t\t", "\t\t\t", "t\t\t\t" };
+
+	return t[tab];
+}
+
+void
+print_output(*output_t output, int tab) {
+	printf ("%soutput %s\n", tabs(tab), output->name);
+	printf ("%sconnected %v\n", tabs(tab+1), output->connected);
+	if (output->connected) {
+		printf ("%smode %s\n", tabs(tab+1), output->mode);
+		printf ("%sprimary %v\n", tabs(tab+1), output->primary);
+		printf ("%swidth, height %d,%d\n", tabs(tab+1), output->width, output->height);
+		printf ("%sx, y %d, %d\n", tabs(tab+1), output->x, output->y);
+	}
+}
+
+void
+print_monitor(*monitor_t monitor, int tab) {
+
+	printf ("%smonitor %s\n", tabs(tab), monitor->name);
+	printf ("%sgroup_id %d\n", tabs(tab+1), monitor->group_id);
+	printf ("%sprimary %v\n", tabs(tab+1), monitor->primary);
+	printf ("%sleader %d\n", tabs(tab+1), monitor->leader);
+	printf ("%swidth, height %d,%d\n", tabs(tab+1), monitor->width, monitor->height);
+	printf ("%sx, y %d, %d\n", tabs(tab+1), monitor->x, monitor->y);
+	printf ("%sgroup_id %d\n", tabs(tab+1), monitor->group_id);
+	printf ("%soutputs", tabs(tab+1));
+	for (int o = 0; o < dim(monitor->outputs); o++)
+		printf(" %s", monitor->outputs[o]->name);
+	printf ("\n");
+}
+
+string[]
+output_config(*output_t output) {
+	string[...] config;
+
+	if (!output->connected) {
+		config = (string[...]) {
+			"--output",
+			output->name,
+			"--off"
+		};
+	} else {
+		config = (string[...]) {
+			"--output",
+			output->name,
+			"--mode",
+			output->mode,
+			"--pos",
+			sprintf("%dx%d", output->x, output->y)
+		};
+		if (output->primary)
+			config[dim(config)] = "--primary";
+	}
+	return config;
+}
+
+string
+output_names(&(*output_t)[] outputs) {
+	string	name = outputs[0]->name;
+
+	for (int o = 1; o < dim(outputs); o++)
+		name = name + "," + outputs[o]->name;
+	return name;
+}
+
+string[]
+monitor_config(*monitor_t monitor) {
+	if (monitor->group_id < 0)
+		return (string[0]) {};
+
+	string[...] config = {
+		"--setmonitor",
+		monitor->name,
+		"auto",
+		output_names(&monitor->outputs),
+	};
+
+	return config;
+}
+
+string[]
+screen_config(*screen_t screen) {
+	return (string[...]) {
+		"--fb",
+		sprintf("%dx%d", screen->width, screen->height),
+		"--dpi", "115"
+	};
+}
+
+string[]
+cat_args(string[][] args) {
+	string[...] ret = {};
+
+	for (int a = 0; a < dim(args); a++) {
+		for (int s = 0; s < dim(args[a]); s++)
+			ret[dim(ret)] = args[a][s];
+	}
+	return ret;
+}
+
+bool	verbose = false;
+bool	dry_run = false;
+
+ParseArgs::argdesc argd = {
+	.args = {
+		{ .var = { .arg_flag = &verbose },
+		  .abbr = 'v',
+		  .name = "verbose",
+		  .desc = "verbose mode"
+		},
+		{ .var = { .arg_flag = &dry_run },
+		  .abbr = 'n',
+		  .name = "dry-run",
+		  .desc = "don't execute, just print"
+		},
+	},
+	.unknown = &(int user_argind),
+};
+
+void
+xrandr_auto()
+{
+	ParseArgs::parseargs(&argd, &argv);
+
+	output_t[] outputs = get_outputs();
+	monitor_t[] monitors = get_monitors(&outputs);
+	string[...][...] args = { {"xrandr"} };
+	string[...] existing = get_existing_monitors();
+	screen_t screen;
+
+	set_primary(&monitors);
+
+	set_pos(&monitors);
+
+	set_screen(&outputs, &screen);
+
+	args[dim(args)] = screen_config(&screen);
+
+	for (int e = 0; e < dim(existing); e++)
+		args[dim(args)] = (string[...]) {
+			"--delmonitor",
+			existing[e]
+		};
+
+	for (int m = 0; m < dim(monitors); m++) {
+		args[dim(args)] = monitor_config(&monitors[m]);
+	}
+
+	for (int o = 0; o < dim(outputs); o++) {
+		args[dim(args)] = output_config(&outputs[o]);
+	}
+
+	if (verbose) {
+		for (int m = 0; m < dim(monitors); m++)
+			print_monitor(&monitors[m], 0);
+		for (int o = 0; o < dim(outputs); o++)
+			print_output(&outputs[o], 0);
+	}
+
+	string[] xrandr_args = cat_args(args);
+
+	if (dry_run) {
+		for (int a = 0; a < dim(xrandr_args); a++)
+			printf("%s ", xrandr_args[a]);
+		printf ("\n");
+	} else {
+		system("xrandr", xrandr_args ...);
+	}
+}
+
+xrandr_auto();
