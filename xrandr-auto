@@ -72,12 +72,12 @@ const int priority_any = 0;
 const int priority_preferred = 1;
 const int priority_current = 2;
 
-typedef enum { start, output, skip_output, mode_get, mode_skip, done } state_t;
+typedef enum { start, start_output, output, skip_output, mode_get, mode_skip, done } state_t;
 
 /* Parse xrandr results to compute the set of available monitors
  */
 output_t[]
-get_outputs() {
+get_outputs(*screen_t screen) {
 	file	input = popen(popen_direction.read, false,
 			      "xrandr", "xrandr", "--verbose", "--prop");
 	output_t[...] outputs = {};
@@ -113,7 +113,7 @@ get_outputs() {
 			case "connected":
 			case "disconnected":
 				add_output();
-				state = state_t.start;
+				state = state_t.start_output;
 				return true;
 			}
 		}
@@ -131,6 +131,14 @@ get_outputs() {
 		}
 		switch (state) {
 		case state_t.start:
+			if (dim(words) >= 10) {
+				screen->width = string_to_integer(words[7]);
+				screen->height = string_to_integer(words[9]);
+				state = state_t.start_output;
+			}
+			getline();
+			break;
+		case state_t.start_output:
 			/* Look for an output */
 			if (dim(words) >= 2) {
 				switch (words[1]) {
@@ -574,11 +582,13 @@ xrandr_auto()
 {
 	ParseArgs::parseargs(&argd, &argv);
 
-	output_t[] outputs = get_outputs();
+	screen_t orig_screen;
+	output_t[] outputs = get_outputs(&orig_screen);
 	monitor_t[] monitors = get_monitors(&outputs);
 	string[...][...] args = { {"xrandr"} };
 	string[...] existing = get_existing_monitors();
 	screen_t screen;
+	screen_t temp_screen;
 
 	set_primary(&monitors);
 
@@ -586,7 +596,11 @@ xrandr_auto()
 
 	set_screen(&outputs, &screen);
 
-	args[dim(args)] = screen_config(&screen);
+	temp_screen.width = max(orig_screen.width, screen.width);
+	temp_screen.height = max(orig_screen.height, screen.height);
+
+	if (temp_screen.width != orig_screen.width || temp_screen.height != orig_screen.height)
+		args[dim(args)] = screen_config(&temp_screen);
 
 	for (int e = 0; e < dim(existing); e++)
 		args[dim(args)] = (string[...]) {
@@ -601,6 +615,9 @@ xrandr_auto()
 	for (int o = 0; o < dim(outputs); o++) {
 		args[dim(args)] = output_config(&outputs[o]);
 	}
+
+	if (temp_screen.height != screen.height || temp_screen.width != screen.width)
+		args[dim(args)] = screen_config(&screen);
 
 	if (verbose) {
 		for (int m = 0; m < dim(monitors); m++)
